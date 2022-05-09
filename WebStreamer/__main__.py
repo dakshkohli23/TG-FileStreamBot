@@ -1,75 +1,82 @@
 # This file is a part of TG-FileStreamBot
 # Coding : Jyothis Jayanth [@EverythingSuckz]
 
-import os
 import sys
-import glob
 import asyncio
 import logging
-import importlib
-from pathlib import Path
-from pyrogram import idle
-from .bot import StreamBot
 from .vars import Var
 from aiohttp import web
-from .server import web_server
-from .utils.keepalive import ping_server
-from apscheduler.schedulers.background import BackgroundScheduler
+from pyrogram import idle
+from WebStreamer import utils
+from WebStreamer import StreamBot
+from WebStreamer.server import web_server
+from WebStreamer.bot.clients import initialize_clients
+
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-)
-logging.getLogger("pyrogram").setLevel(logging.WARNING)
-logging.getLogger("apscheduler").setLevel(logging.WARNING)
+    datefmt="%d/%m/%Y %H:%M:%S",
+    format="[%(asctime)s][%(levelname)s] => %(message)s",
+    handlers=[logging.StreamHandler(stream=sys.stdout),
+              logging.FileHandler("streambot.log", mode="a", encoding="utf-8")],)
 
-ppath = "WebStreamer/bot/plugins/*.py"
-files = glob.glob(ppath)
+logging.getLogger("aiohttp").setLevel(logging.ERROR)
+logging.getLogger("pyrogram").setLevel(logging.ERROR)
+logging.getLogger("aiohttp.web").setLevel(logging.ERROR)
 
-loop = asyncio.get_event_loop()
+server = web.AppRunner(web_server())
 
+if sys.version_info[1] > 9:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+else:
+    loop = asyncio.get_event_loop()
 
 async def start_services():
-    print('\n')
-    print('------------------- Initalizing Telegram Bot -------------------')
+    print()
+    print("-------------------- Initializing Telegram Bot --------------------")
     await StreamBot.start()
-    print('----------------------------- DONE -----------------------------')
-    print('\n')
-    print('--------------------------- Importing ---------------------------')
-    for name in files:
-        with open(name) as a:
-            patt = Path(a.name)
-            plugin_name = patt.stem.replace(".py", "")
-            plugins_dir = Path(f"WebStreamer/bot/plugins/{plugin_name}.py")
-            import_path = ".plugins.{}".format(plugin_name)
-            spec = importlib.util.spec_from_file_location(import_path, plugins_dir)
-            load = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(load)
-            sys.modules["WebStreamer.bot.plugins." + plugin_name] = load
-            print("Imported => " + plugin_name)
+    bot_info = await StreamBot.get_me()
+    StreamBot.username = bot_info.username
+    print("------------------------------ DONE ------------------------------")
+    print()
+    print(
+        "---------------------- Initializing Clients ----------------------"
+    )
+    await initialize_clients()
+    print("------------------------------ DONE ------------------------------")
     if Var.ON_HEROKU:
-        print('------------------ Starting Keep Alive Service ------------------')
-        print('\n')
-        scheduler = BackgroundScheduler()
-        scheduler.add_job(ping_server, "interval", seconds=1200)
-        scheduler.start()
-    print('-------------------- Initalizing Web Server --------------------')
-    app = web.AppRunner(await web_server())
-    await app.setup()
-    bind_address = "0.0.0.0" if Var.ON_HEROKU else Var.FQDN
-    await web.TCPSite(app, bind_address, Var.PORT).start()
-    print('----------------------------- DONE -----------------------------')
-    print('\n')
-    print('----------------------- Service Started -----------------------')
-    print('                        bot =>> {}'.format((await StreamBot.get_me()).first_name))
-    print('                        server ip =>> {}:{}'.format(bind_address, Var.PORT))
+        print("------------------ Starting Keep Alive Service ------------------")
+        print()
+        asyncio.create_task(utils.ping_server())
+    print("--------------------- Initalizing Web Server ---------------------")
+    await server.setup()
+    bind_address = "0.0.0.0" if Var.ON_HEROKU else Var.BIND_ADDRESS
+    await web.TCPSite(server, bind_address, Var.PORT).start()
+    print("------------------------------ DONE ------------------------------")
+    print()
+    print("------------------------- Service Started -------------------------")
+    print("                        bot =>> {}".format(bot_info.first_name))
+    if bot_info.dc_id:
+        print("                        DC ID =>> {}".format(str(bot_info.dc_id)))
+    print("                        server ip =>> {}".format(bind_address, Var.PORT))
     if Var.ON_HEROKU:
-        print('                        app runnng on =>> {}'.format(Var.FQDN))
-    print('---------------------------------------------------------------')
+        print("                        app running on =>> {}".format(Var.FQDN))
+    print("------------------------------------------------------------------")
     await idle()
 
-if __name__ == '__main__':
+async def cleanup():
+    await server.cleanup()
+    await StreamBot.stop()
+
+if __name__ == "__main__":
     try:
         loop.run_until_complete(start_services())
     except KeyboardInterrupt:
-        logging.info('----------------------- Service Stopped -----------------------')
+        pass
+    except Exception as err:
+        logging.error(err.with_traceback(None))
+    finally:
+        loop.run_until_complete(cleanup())
+        loop.stop()
+        print("------------------------ Stopped Services ------------------------")
